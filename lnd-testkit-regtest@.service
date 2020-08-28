@@ -1,0 +1,10 @@
+[Unit]
+Description=LNP/BP Testkit regtest LND #%I
+
+[Service]
+Type=exec
+ExecStart=lnd -C %E/lnd-testkit-%i/lnd.conf
+Restart=always
+
+[Install]
+WantedBy=default.target

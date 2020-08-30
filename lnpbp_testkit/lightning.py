@@ -50,3 +50,6 @@ class LnNode(Protocol):
 
     def pay_invoice(self, invoice: str):
         """Pay given invoice"""
+
+    def wait_init(self):
+        """Blocks until the node is fully functional"""

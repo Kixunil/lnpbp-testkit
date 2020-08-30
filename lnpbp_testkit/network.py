@@ -12,6 +12,7 @@ from .lightning import LnNode, ParsedInvoice
 from .lightning import P2PAddr as LnP2PAddr
 from .lnd import LndRest
 from . import lnd
+from . import parsing
 
 try:
     from typing import Mapping  # type: ignore
@@ -34,6 +35,8 @@ except ImportError:  # pragma: nocover
     from typing_extensions import Protocol  # type: ignore
 
 SECONDARY_NODE_ID = "1"
+# Currently the max capacity for non-wumbo clients
+CHANNEL_WARMUP_CAPACITY: int = 2 ** 24 - 1
 
 class PaymentRequest(Protocol):
     def auto_pay(self, network: Network):
@@ -153,6 +156,31 @@ class Network:
         if "secondary_lnd_host" in data:
             self._secondary_node = LndRest(data["secondary_lnd_host"], data["secondary_lnd_macaroon"], data["secondary_lnd_tls_cert_file"])
 
+    def warm_up(self, blocks: bool = True, secondary_ln_node: bool = True, channels: bool = False):
+        """Initializes the network
+        
+        You can select specific things to initialize:
+
+        * `blocks` - makes sure there's at least 101 blocks
+        * `secondary_ln_node` - create a secondary LN node, the initialization of the node takes a while, so it's done asynchronously unless `channels` is `True`
+        * `channels` - sets up some LN channels, currently only secondary -> main LN node, blocks if secondary LN node is not initialized
+        """
+        if blocks:
+            info = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getblockchaininfo")
+            if info["blocks"] < 101:
+                address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
+                BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
+
+        if secondary_ln_node:
+            if channels:
+                self._prepare_channel(self._main_ln_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
+            else:
+                if self._secondary_node is None:
+                    self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
+        else:
+            if channels:
+                raise Exception("Impossible to prepare channels without also preparing secondary LN node")
+
 
     def auto_pay(self, link: str):
         """Automatically pays BIP21 or BOLT11, with or without `lightning:` scheme.
@@ -204,14 +232,16 @@ class Network:
     def _prepare_channel(self, dest: str, amount_sat: int):
         if self._secondary_node is None:
             self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
+        self._secondary_node.wait_init()
 
         if self._secondary_node.get_spendable_sat(dest) < amount_sat:
             # Reserve some capacity for more payments
             channel_capacity = amount_sat * 2
             # Ensure there's enough coins
-            while self._secondary_node.get_chain_balance() < channel_capacity + 100000:
-                address = self._secondary_node.get_chain_address()
-                BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
+            address = self._secondary_node.get_chain_address()
+            coins_to_send = channel_capacity + 100000
+            # We manually format because Python likes to screw it up
+            self.auto_pay_legacy(address, "%d.%d" % (coins_to_send // 100000000, coins_to_send % 100000000))
 
             node_address = self._get_ln_p2p_address_by_id(dest)
             self._secondary_node.open_channel(node_address, channel_capacity)
@@ -232,11 +262,13 @@ class Network:
     def _parse_invoice(self, invoice: str) -> ParsedInvoice:
         if self._secondary_node is None:
             self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
+        self._secondary_node.wait_init()
 
         return self._main_ln_node.parse_invoice(invoice)
 
     def _pay_ln_invoice(self, invoice: str):
         if self._secondary_node is None:
             self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
+        self._secondary_node.wait_init()
 
         self._secondary_node.pay_invoice(invoice)

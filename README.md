@@ -110,9 +110,8 @@ One of the key features of `auto_pay()` is that it generates coins/sets up chann
 It also spawns secondary LN node when needed.
 This obviously takes some time and LND isn't particularly fast when it comes to initialization.
 If you want to improve it, consider writing a PR against LND to speed it up, or complaining at their repository.
-As another optimization, I'd like to eventually implement a `warm_up()` method, which could be used at the beginning of the test.
-This would allow us to do some operations (such as setting up a web service using Selenium) in parallel to LND initializing.
-Feel free to help by submitting a PR!
+As another optimization, you can call the `warm_up()` method at the beginning of the test.
+This will start LND asynchronously, so that you can perform other operations (such as setting up a web service using Selenium) in parallel to LND initializing.
 
 ### Does this project use semantic versioning?
 

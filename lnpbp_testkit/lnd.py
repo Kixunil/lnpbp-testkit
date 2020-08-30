@@ -71,6 +71,7 @@ class LndRest(LnNode):
     _session: requests.Session
     # Used as fallback
     _p2p_port: Optional[int] = None
+    _initialized: bool = False
 
     def __init__(self, host_port: str, macaroon: str, tls_cert_path: Path):
         headers = { "Grpc-Metadata-macaroon": macaroon }
@@ -172,10 +173,11 @@ class LndRest(LnNode):
             raise Exception(resp["payment_error"])
 
     def wait_init(self):
-        while True:
+        while not self._initialized:
             try:
                 info = self._rpc_call("getinfo")
                 if info["synced_to_chain"]:
+                    self._initialized = True
                     return
             except:
                 pass
@@ -257,6 +259,5 @@ def get_testkit_node(instance_id: str) -> LnNode:
 
     lnd = LndRest(host_port, macaroon, tls_cert_path)
     lnd._p2p_port = parsing.port_from_host_port(config["listen"])
-    lnd.wait_init()
 
     return lnd

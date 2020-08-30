@@ -8,7 +8,7 @@ with open(path.join(path.abspath(path.dirname(__file__)), "README.md")) as f:
 
 setup(
     name="lnpbp-testkit",
-    version="0.1.0",
+    version="0.1.1",
     url="https://github.com/Kixunil/lnpbp-testkit",
     author="Martin Habovstiak",
     author_email="martin.habovstiak@gmail.com",

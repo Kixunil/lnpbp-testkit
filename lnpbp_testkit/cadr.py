@@ -1,3 +1,8 @@
+"""Module responsible for integrating LNP/BP Testkit into Cryptoanarchy Debian Repository
+
+See https://deb.ln-ask.me to learn more about the Cryptoanarchy Debian Repository.
+"""
+
 from pathlib import Path
 import configparser
 import subprocess
@@ -37,6 +42,11 @@ LND_CONFIG_PATH: Path = Path("/etc/lnd-system-regtest/lnd.conf")
 _network: Optional[Network] = None
 
 def network() -> Network:
+    """Instantiates network by connecting to the system regtest network.
+    
+    You need the right permissions to use this method - either passwordless sudo or
+    `sudo usermod -a -G bitcoin-regtest,lnd-system-regtest $USER`.
+    """
     global _network
     if _network is not None:
         return _network

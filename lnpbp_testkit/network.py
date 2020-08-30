@@ -1,3 +1,8 @@
+"""This is currently the most important module as it contains the `Network` class.
+
+The network class is used to send payments.
+"""
+
 from __future__ import annotations
 from bitcoin.rpc import Proxy as BitcoindProxy
 from decimal import Decimal
@@ -113,6 +118,8 @@ def _parse_link(link: str) -> PaymentRequest:
         raise InvalidPaymentLink("Unknown schema")
 
 class Network:
+    """Represents regtest network used for testing"""
+
     _main_bitcoind_url: str
     _bitcoind_public_port: int
     _zmq_tx_port: int
@@ -121,6 +128,18 @@ class Network:
     _secondary_node: Optional[LnNode] = None
 
     def __init__(self, data: Mapping[str, Any]):
+        """Configures the network
+
+        `data` is intentionally a dictionary so that you can simply load it from a file.
+        The public fields are:
+        * `bitcoind_url` : "USERNAME:PASSWORD@HOST:PORT",
+        * `bitcoind_public_port`: BITCOIN_RPC_PROXY_PORT, # optional, the port from bitcoind_url will be used if not present
+        * `zmq_tx_port`: ZMQPUBRAWTX_PORT,
+        * `zmq_block_port`: ZMQPUBRAWBLOCK_PORT,
+	* `lnd_host`: "REST_HOST:REST_PORT",
+	* `lnd_macaroon`: "HEX_ENCODED_MACAROON",
+	* `lnd_tls_cert_file`: "PATH_TO_LND_TLS_CERTIFICATE",`
+        """
         self._main_bitcoind_url = data["bitcoind_url"]
         self._zmq_tx_port = data["zmq_tx_port"]
         self._zmq_block_port = data["zmq_block_port"]
@@ -136,9 +155,19 @@ class Network:
 
 
     def auto_pay(self, link: str):
+        """Automatically pays BIP21 or BOLT11, with or without `lightning:` scheme.
+        
+        This methods generates coins if it's needed for paying and opens the channel if needed in case of LN payment.
+        """
         _parse_link(link).auto_pay(self)
 
     def auto_pay_legacy(self, address: str, amount: str):
+        """Sends specified amount to a chain addres.
+
+        The amount must be decimal in "bitcoins" (not sats).
+        
+        This methods generates coins if it's needed for paying.
+        """
         ChainPayment(address, amount).auto_pay(self)
 
     def _prepare_chain_coins(self, amount: Decimal):

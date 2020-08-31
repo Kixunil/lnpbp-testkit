@@ -1,4 +1,6 @@
 from __future__ import annotations
+from datetime import datetime
+from time import sleep
 
 try:
     from typing import Protocol
@@ -28,6 +30,24 @@ class P2PAddr:
 class ParsedInvoice:
     dest: str
     amount_msat: int
+    expiry: datetime
+
+class InvoiceHandle:
+    """Handle with BOLT11 invoice that can be easily checked for payment"""
+    _bolt11: str
+    _node: LnNode
+
+    def bolt11(self) -> str:
+        return self._bolt11
+
+    def uri(self) -> str:
+        return "lightning:%s" % self._bolt11
+
+    def is_paid(self) -> bool:
+        return self._node.is_invoice_paid(self._bolt11)
+
+    def wait_paid(self) -> bool:
+        return self._node.wait_invoice_paid(self._bolt11)
 
 class LnNode(Protocol):
     def get_p2p_address(self) -> P2PAddr:
@@ -50,6 +70,23 @@ class LnNode(Protocol):
 
     def pay_invoice(self, invoice: str):
         """Pay given invoice"""
+
+    def create_invoice(self, amount_msat: int, memo: str) -> InvoiceHandle:
+        """Creates an invoice with given amount and memo"""
+
+    def is_invoice_paid(self, invoice: str) -> bool:
+        """Checks if the invoice is paid"""
+
+    def wait_invoice_paid(self, invoice: str) -> bool:
+        """Checks if the invoice is paid
+
+        The default implementation just calls is_invoice_paid() in a loop
+        """
+
+        parsed = self.parse_invoice(invoice)
+        while datetime.now() < parsed.expiry and not self.is_invoice_paid(invoice):
+            sleep(1)
+        return self.is_invoice_paid(invoice)
 
     def wait_init(self):
         """Blocks until the node is fully functional"""

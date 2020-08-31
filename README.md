@@ -34,7 +34,7 @@ Read below for instructions on standalone use.
 - [ ] Pay using PayJoin
 - [ ] Withdraw using BIP21 request
 - [ ] Withdraw using chain address
-- [ ] Withdraw using BOLT11
+- [x] Withdraw using BOLT11
 - [ ] Withdraw using LNURL-withdraw
 - [ ] Withdraw using LNURL-pay
 - [ ] Withdraw using LN keysend
@@ -82,6 +82,22 @@ network = lnpbp_testkit.Network(network_config)
 ```
 
 5. You can now pay the request using `network.auto_pay()`
+
+## Public API
+
+So far, the public API is minimalistic. The currently public items are:
+
+* `cadr.network()` - explained in [Usage with Cryptoanarchy Debian Repository](#with-cryptoanarchy-debian-repository-recommended)
+* The `Network` class - instantiation explained in [Usage without Cryptoanarchy Debian Repository](#without-cryptoanarchy-debian-repository)
+* `Network.auto_pay(request: str)` - any BIP21 or BOLT11 (with or without `lightning:` prefix) request will be paid automatically.
+* `Network.auto_pay_legacy(address: str, amount: str)` - sends `amount` coins to address `address`
+* `Network.create_ln_invoice(amount_msat: int, memo: str) -> LnInvoiceHandle` - Creates an LN invoice that can be paid from the tested application.
+                                                                                Also makes sure a channel with sufficient liquidity exists.
+* `LnInvoiceHandle` - a class that represents and invoice that can be serialized or checked if it was paid.
+* `LnInvoiceHandle.bolt11() -> str` - returns pure BOLT11 invoice.
+* `LnInvoiceHandle.uri() -> str` - returns URI - BOLT11 invoice prefixed with `lightning:`.
+* `LnInvoiceHandle.is_paid() -> bool` - returns `True` if the invoice was paid.
+* `LnInvoiceHandle.wait_paid() -> bool` - waits until the invoice is paid or expired. Returns `True` if it was paid, `False` after expiry.
 
 ## FAQ
 

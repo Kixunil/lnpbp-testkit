@@ -3,11 +3,12 @@ import os
 import socket
 import subprocess
 import itertools
+from datetime import datetime, timedelta
 from time import sleep
 from pathlib import Path
 from xdg.BaseDirectory import load_first_config, save_config_path, save_data_path, load_data_paths
 from hashlib import sha256
-from .lightning import LnNode, ParsedInvoice
+from .lightning import LnNode, ParsedInvoice, InvoiceHandle
 from .lightning import P2PAddr as LnP2PAddr
 from . import parsing
 
@@ -165,12 +166,29 @@ class LndRest(LnNode):
         parsed_invoice = ParsedInvoice()
         parsed_invoice.dest = response["destination"]
         parsed_invoice.amount_msat = int(response["num_msat"])
+        parsed_invoice.expiry = datetime.fromtimestamp(int(response["timestamp"])) + timedelta(seconds = int(response["expiry"]))
         return parsed_invoice
 
     def pay_invoice(self, invoice: str):
         resp = self._rpc_call("channels/transactions", { "payment_request" : invoice })
         if "payment_error" in resp and resp["payment_error"] is not None and len(str(resp["payment_error"])) > 0:
             raise Exception(resp["payment_error"])
+
+    def create_invoice(self, amount_msat: int, memo: str) -> InvoiceHandle:
+        invoice_req = {
+                "memo": memo,
+                "value_msat": amount_msat,
+        }
+        response = self._rpc_call("invoices", invoice_req)
+        invoice = InvoiceHandle()
+        invoice._bolt11 = response["payment_request"]
+        invoice._node = self
+        return invoice
+
+    def is_invoice_paid(self, invoice: str) -> bool:
+        decode_payreq_response = self._rpc_call("payreq/%s" % invoice)
+        lookup_invoice_response = self._rpc_call("invoice/%s" % decode_payreq_response["payment_hash"])
+        return lookup_invoice_response["settled"]
 
     def wait_init(self):
         while not self._initialized:

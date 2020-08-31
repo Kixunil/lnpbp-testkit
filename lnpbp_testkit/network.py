@@ -10,6 +10,7 @@ from time import sleep
 from xdg.BaseDirectory import load_first_config
 from .lightning import LnNode, ParsedInvoice
 from .lightning import P2PAddr as LnP2PAddr
+from .lightning import InvoiceHandle as LnInvoiceHandle
 from .lnd import LndRest
 from . import lnd
 from . import parsing
@@ -64,9 +65,11 @@ class LightningPayment:
 
     def auto_pay(self, network: Network):
         parsed_invoice = network._parse_invoice(self.invoice)
-        network._prepare_channel(parsed_invoice.dest, (parsed_invoice.amount_msat + 999) // 1000)
+        if network._secondary_node is None:
+            network._secondary_node = network._spawn_secondary_node(SECONDARY_NODE_ID)
+        network._secondary_node.wait_init()
+        network._prepare_channel(network._secondary_node, parsed_invoice.dest, (parsed_invoice.amount_msat + 999) // 1000)
         network._pay_ln_invoice(self.invoice)
-
 
 class InvalidPaymentLink(Exception):
     def __init__(self, message: str):
@@ -172,11 +175,13 @@ class Network:
                 BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
 
         if secondary_ln_node:
+            if self._secondary_node is None:
+                self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
+
             if channels:
-                self._prepare_channel(self._main_ln_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
-            else:
-                if self._secondary_node is None:
-                    self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
+                self._secondary_node.wait_init()
+                self._prepare_channel(self._secondary_node, self._main_ln_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
+                self._prepare_channel(self._main_ln_node, self._secondary_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
         else:
             if channels:
                 raise Exception("Impossible to prepare channels without also preparing secondary LN node")
@@ -197,6 +202,16 @@ class Network:
         This methods generates coins if it's needed for paying.
         """
         ChainPayment(address, amount).auto_pay(self)
+
+    def create_ln_invoice(self, amount_msat: int, memo: str) -> LnInvoiceHandle:
+        """Creates a Lightning invoice with given amount and memo"""
+
+        if self._secondary_node is None:
+            self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
+
+        self._secondary_node.wait_init()
+        self._prepare_channel(self._main_ln_node, self._secondary_node.get_p2p_address().pubkey, (amount_msat + 999) // 1000)
+        return self._secondary_node.create_invoice(amount_msat, memo)
 
     def _prepare_chain_coins(self, amount: Decimal):
         # We assume pessimistic fee 100000 sats
@@ -229,22 +244,18 @@ class Network:
 
         raise Exception("Unknown node " + node_id)
 
-    def _prepare_channel(self, dest: str, amount_sat: int):
-        if self._secondary_node is None:
-            self._secondary_node = self._spawn_secondary_node(SECONDARY_NODE_ID)
-        self._secondary_node.wait_init()
-
-        if self._secondary_node.get_spendable_sat(dest) < amount_sat:
+    def _prepare_channel(self, source: LnNode, dest: str, amount_sat: int):
+        if source.get_spendable_sat(dest) < amount_sat:
             # Reserve some capacity for more payments
             channel_capacity = amount_sat * 2
             # Ensure there's enough coins
-            address = self._secondary_node.get_chain_address()
+            address = source.get_chain_address()
             coins_to_send = channel_capacity + 100000
             # We manually format because Python likes to screw it up
             self.auto_pay_legacy(address, "%d.%d" % (coins_to_send // 100000000, coins_to_send % 100000000))
 
             node_address = self._get_ln_p2p_address_by_id(dest)
-            self._secondary_node.open_channel(node_address, channel_capacity)
+            source.open_channel(node_address, channel_capacity)
 
             # Confirm the channel
             # Something is wrong here, so let's retry
@@ -256,7 +267,7 @@ class Network:
             BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 6, address)
 
             # wait for the channel to activate
-            while self._secondary_node.get_spendable_sat(dest) < amount_sat:
+            while source.get_spendable_sat(dest) < amount_sat:
                 sleep(1)
 
     def _parse_invoice(self, invoice: str) -> ParsedInvoice:

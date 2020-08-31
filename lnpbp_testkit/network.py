@@ -79,7 +79,7 @@ def _parse_link(link: str) -> PaymentRequest:
         if len(parts) == 1:
             if link.startswith("1") or link.startswith("3") or link.startswith("bc1"):
                 raise InvalidPaymentLink("Address can't be parsed as a payment link because it's missing amount")
-            if link.startswith("lnrt"):
+            if link.startswith("lnbcrt"):
                 return LightningPayment(link)
             if link.startswith("ln"):
                 raise InvalidPaymentLink("Attempt to pay an invoice from a different network, only regtest is allowed")

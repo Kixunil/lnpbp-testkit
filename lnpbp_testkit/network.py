@@ -37,7 +37,8 @@ except ImportError:  # pragma: nocover
 
 SECONDARY_NODE_ID = "1"
 # Currently the max capacity for non-wumbo clients
-CHANNEL_WARMUP_CAPACITY: int = 2 ** 24 - 1
+MAX_NON_WUMBO_CAPACITY: int = 2 ** 24 - 1
+CHANNEL_WARMUP_CAPACITY: int = MAX_NON_WUMBO_CAPACITY
 
 class PaymentRequest(Protocol):
     def auto_pay(self, network: Network):

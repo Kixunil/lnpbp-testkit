@@ -181,8 +181,8 @@ class Network:
 
             if channels:
                 self._secondary_node.wait_init()
-                self._prepare_channel(self._secondary_node, self._main_ln_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
-                self._prepare_channel(self._main_ln_node, self._secondary_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
+                self._open_channel(self._secondary_node, self._main_ln_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
+                self._open_channel(self._main_ln_node, self._secondary_node.get_p2p_address().pubkey, CHANNEL_WARMUP_CAPACITY)
         else:
             if channels:
                 raise Exception("Impossible to prepare channels without also preparing secondary LN node")
@@ -245,31 +245,36 @@ class Network:
 
         raise Exception("Unknown node " + node_id)
 
+    def _open_channel(self, source: LnNode, dest: str, amount_sat: int):
+        # Ensure there's enough coins
+        address = source.get_chain_address()
+        coins_to_send = amount_sat + 100000
+        # We manually format because Python likes to screw it up
+        self.auto_pay_legacy(address, "%d.%d" % (coins_to_send // 100000000, coins_to_send % 100000000))
+
+        node_address = self._get_ln_p2p_address_by_id(dest)
+        source.open_channel(node_address, amount_sat)
+
+        # Confirm the channel
+        # Something is wrong here, so let's retry
+        try:
+            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
+        except:
+            sleep(5)
+            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
+        BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 6, address)
+
     def _prepare_channel(self, source: LnNode, dest: str, amount_sat: int):
         if source.get_spendable_sat(dest) < amount_sat:
             # Reserve some capacity for more payments
-            channel_capacity = amount_sat * 2
-            # Ensure there's enough coins
-            address = source.get_chain_address()
-            coins_to_send = channel_capacity + 100000
-            # We manually format because Python likes to screw it up
-            self.auto_pay_legacy(address, "%d.%d" % (coins_to_send // 100000000, coins_to_send % 100000000))
+            channel_capacity = max(min(amount_sat * 2, MAX_NON_WUMBO_CAPACITY), 20000)
 
-            node_address = self._get_ln_p2p_address_by_id(dest)
-            source.open_channel(node_address, channel_capacity)
-
-            # Confirm the channel
-            # Something is wrong here, so let's retry
-            try:
-                address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-            except:
-                sleep(5)
-                address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-            BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 6, address)
+            self._open_channel(source, dest, channel_capacity)
 
             # wait for the channel to activate
             while source.get_spendable_sat(dest) < amount_sat:
                 sleep(1)
+
 
     def _parse_invoice(self, invoice: str) -> ParsedInvoice:
         if self._secondary_node is None:

@@ -126,7 +126,12 @@ class LndRest(LnNode):
                 },
                 "perm": False,
         }
-        self._rpc_call("peers", peer_req)
+        try:
+            self._rpc_call("peers", peer_req)
+        except UnexpectedHttpStatusException as e:
+            if e.error is None or not e.error.startswith("already connected to peer"):
+                raise e
+
         while True:
             try:
                 info = self._rpc_call("getinfo")

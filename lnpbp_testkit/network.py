@@ -172,6 +172,7 @@ class Network:
         if blocks:
             info = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getblockchaininfo")
             if info["blocks"] < 101:
+                self._prepare_wallet()
                 address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
                 BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
 
@@ -214,7 +215,13 @@ class Network:
         self._prepare_channel(self._main_ln_node, self._secondary_node.get_p2p_address().pubkey, (amount_msat + 999) // 1000)
         return self._secondary_node.create_invoice(amount_msat, memo)
 
+    def _prepare_wallet(self):
+        wallets = BitcoindProxy(service_url = self._main_bitcoind_url)._call("listwallets")
+        if len(wallets) == 0:
+            BitcoindProxy(service_url = self._main_bitcoind_url)._call("createwallet", "test_wallet")
+
     def _prepare_chain_coins(self, amount: Decimal):
+        self._prepare_wallet()
         # We assume pessimistic fee 100000 sats
         # I don't care to compute halvings etc, so just generate blocks in a loop
         while BitcoindProxy(service_url = self._main_bitcoind_url).getbalance() < amount * 100000000 + 100000:

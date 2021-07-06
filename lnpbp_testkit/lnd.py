@@ -11,6 +11,7 @@ from hashlib import sha256
 from .lightning import LnNode, ParsedInvoice, InvoiceHandle
 from .lightning import P2PAddr as LnP2PAddr
 from . import parsing
+from . import ports
 
 try:
     from typing import Mapping  # type: ignore
@@ -241,8 +242,8 @@ def generate_testkit_config(instance_id: str, p2p_port: int, grpc_port: int, res
 def create_testkit_node(node_id: str, bitcoind_public_port: int, zmq_tx_port: int, zmq_block_port: int):
     config_dir = load_first_config(get_xdg_resource(node_id))
     if config_dir is None or not Path(config_dir).joinpath("lnd.conf").exists():
-        # TODO: dynamically allocate ports
-        generate_testkit_config(node_id, 29735, 30009, 28080, bitcoind_public_port, zmq_tx_port, zmq_block_port)
+        p2p_port, grpc_port, rest_port = ports.allocate(3)
+        generate_testkit_config(node_id, p2p_port, grpc_port, rest_port, bitcoind_public_port, zmq_tx_port, zmq_block_port)
 
 def launch_testkit_node(instance_id: str):
     unit_name = "lnd-testkit-regtest@%s.service" % instance_id

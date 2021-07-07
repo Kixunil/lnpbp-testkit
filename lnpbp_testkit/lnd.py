@@ -8,7 +8,7 @@ from time import sleep
 from pathlib import Path
 from xdg.BaseDirectory import load_first_config, save_config_path, save_data_path, load_data_paths
 from hashlib import sha256
-from .lightning import LnNode, ParsedInvoice, InvoiceHandle
+from .lightning import LnNode, ParsedInvoice, InvoiceHandle, Channel
 from .lightning import P2PAddr as LnP2PAddr
 from . import parsing
 from . import ports
@@ -119,7 +119,7 @@ class LndRest(LnNode):
 
             return LnP2PAddr(info["identity_pubkey"], "127.0.0.1", self._p2p_port)
 
-    def open_channel(self, peer: LnP2PAddr, capacity_sat: int):
+    def open_channel(self, peer: LnP2PAddr, capacity_sat: int, push_sat: int = 0, private: bool = False) -> Channel:
         peer_req = {
                 "addr": {
                     "pubkey": peer.pubkey,
@@ -145,8 +145,22 @@ class LndRest(LnNode):
         channel_req = {
                 "node_pubkey_string": peer.pubkey,
                 "local_funding_amount": capacity_sat,
+                "push_sat": push_sat,
         }
-        self._rpc_call("channels", channel_req)
+        channel = self._rpc_call("channels", channel_req)
+        return Channel(channel["funding_txid_bytes"], channel["output_index"])
+
+    def update_channel_policy(self, channel: Channel, base_fee_msat: int, fee_proportional_millionths: int, time_lock_delta: int):
+        update_req = {
+                "chan_point": {
+                    "funding_txid_bytes": channel.txid,
+                    "output_index": channel.output_index
+                },
+                "base_fee_msat": base_fee_msat,
+                "fee_rate": fee_proportional_millionths / 1000000,
+                "time_lock_delta": time_lock_delta,
+        }
+        channel = self._rpc_call("chanpolicy", update_req)
 
     def get_spendable_sat(self, dest: str) -> int:
         response = self._rpc_call("channels")

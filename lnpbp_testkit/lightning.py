@@ -7,6 +7,14 @@ try:
 except ImportError:  # pragma: nocover
     from typing_extensions import Protocol # type: ignore
 
+class Channel:
+    txid: str
+    output_index: int
+
+    def __init__(self, txid: str, output_index: int):
+        self.txid = txid
+        self.output_index = output_index
+
 class P2PAddr:
     pubkey: str
     host: str
@@ -53,7 +61,7 @@ class LnNode(Protocol):
     def get_p2p_address(self) -> P2PAddr:
         """Returns P2P address of the node"""
 
-    def open_channel(self, peer: P2PAddr, capacity_sat: int):
+    def open_channel(self, peer: P2PAddr, capacity_sat: int, push_sat: int = 0, private: bool = False) -> Channel:
         """Opens a channel with peer `peer` with capacity `capacity_sat`"""
 
     def get_spendable_sat(self, dest: str) -> int:
@@ -90,3 +98,6 @@ class LnNode(Protocol):
 
     def wait_init(self):
         """Blocks until the node is fully functional"""
+
+    def update_channel_policy(self, channel: Channel, base_fee_msat: int, fee_proportional_millionths: int, time_lock_delta: int):
+        """Updates the policy of `channel`"""

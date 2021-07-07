@@ -8,17 +8,27 @@ from bitcoin.rpc import Proxy as BitcoindProxy
 from decimal import Decimal
 from time import sleep
 from xdg.BaseDirectory import load_first_config
-from .lightning import LnNode, ParsedInvoice
+from .lightning import LnNode, ParsedInvoice, Channel
 from .lightning import P2PAddr as LnP2PAddr
 from .lightning import InvoiceHandle as LnInvoiceHandle
 from .lnd import LndRest
 from . import lnd
 from . import parsing
+from pathlib import Path
+import toml
+import re
+
+NODE_NAME_RE = re.compile("[a-z0-9_-]*")
 
 try:
     from typing import Mapping  # type: ignore
 except ImportError:  # pragma: nocover
     from typing_extensions import Mapping  # type: ignore
+
+try:
+    from typing import MutableMapping  # type: ignore
+except ImportError:  # pragma: nocover
+    from typing_extensions import MutableMapping  # type: ignore
 
 try:
     from typing import Any  # type: ignore
@@ -133,6 +143,8 @@ class Network:
     _zmq_block_port: int
     _main_ln_node: LnNode
     _secondary_node: Optional[LnNode] = None
+    _ln_nodes_by_name: MutableMapping[str, LnNode] = {}
+    _ln_nodes_by_pubkey: MutableMapping[str, LnNode] = {}
 
     def __init__(self, data: Mapping[str, Any]):
         """Configures the network
@@ -160,6 +172,13 @@ class Network:
         if "secondary_lnd_host" in data:
             self._secondary_node = LndRest(data["secondary_lnd_host"], data["secondary_lnd_macaroon"], data["secondary_lnd_tls_cert_file"])
 
+    def _prepare_blocks(self):
+        info = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getblockchaininfo")
+        if info["blocks"] < 101:
+            self._prepare_wallet()
+            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
+            BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
+
     def warm_up(self, blocks: bool = True, secondary_ln_node: bool = True, channels: bool = False):
         """Initializes the network
         
@@ -170,11 +189,7 @@ class Network:
         * `channels` - sets up some LN channels, currently only secondary -> main LN node, blocks if secondary LN node is not initialized
         """
         if blocks:
-            info = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getblockchaininfo")
-            if info["blocks"] < 101:
-                self._prepare_wallet()
-                address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-                BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
+            self._prepare_blocks()
 
         if secondary_ln_node:
             if self._secondary_node is None:
@@ -250,9 +265,9 @@ class Network:
             if secondary_ln_node_addr.pubkey == node_id:
                 return secondary_ln_node_addr
 
-        raise Exception("Unknown node " + node_id)
+        return self._ln_nodes_by_pubkey[node_id].get_p2p_address()
 
-    def _open_channel(self, source: LnNode, dest: str, amount_sat: int):
+    def _open_channel(self, source: LnNode, dest: str, amount_sat: int, push_sat: int = 0, private: bool = False) -> Channel:
         # Ensure there's enough coins
         address = source.get_chain_address()
         coins_to_send = amount_sat + 100000
@@ -260,7 +275,7 @@ class Network:
         self.auto_pay_legacy(address, "%d.%d" % (coins_to_send // 100000000, coins_to_send % 100000000))
 
         node_address = self._get_ln_p2p_address_by_id(dest)
-        source.open_channel(node_address, amount_sat)
+        channel = source.open_channel(node_address, amount_sat, push_sat, private)
 
         # Confirm the channel
         # Something is wrong here, so let's retry
@@ -270,6 +285,8 @@ class Network:
             sleep(5)
             address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
         BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 6, address)
+
+        return channel
 
     def _prepare_channel(self, source: LnNode, dest: str, amount_sat: int):
         if source.get_spendable_sat(dest) < amount_sat:
@@ -296,3 +313,175 @@ class Network:
         self._secondary_node.wait_init()
 
         self._secondary_node.pay_invoice(invoice)
+
+    def load_scenario(self, path: Path):
+        """
+        Loads a sceario from toml file.
+
+        This method allows declarative specification of test scenarios
+        to be loaded from a Toml file. You can then more easily implement
+        various test cases involving multiple nodes.
+
+        Example toml input:
+
+        ```toml
+        # It may be annoying to type `type = "lnd"` (:D) but we are preparing for planned
+        # feature of supporting other LN implementations or things like loop
+        [nodes.alice]
+        type = "lnd"
+
+        [nodes.bob]
+        type = "lnd"
+        # Optional wallet balance
+        # Warning: this is currently MINIMUM balance for nodes with channels
+        # We need to implement PSBT opening to achieve exact balance - PRs welcome!
+        wallet_balance_sats = 1000000
+
+        # alice is initiator
+        [channels.alice.bob]
+        # The only required field
+        capacity_sats = 1000000
+
+        # Optional fields:
+        push_sats = 100000
+        # from alice to bob
+        fwd_fee_proportional_millionths = 1000
+        fwd_fee_base_msats = 100
+        fwd_timelock_delta = 144
+
+        # from bob to alice
+        rev_fee_proportional_millionths = 1000
+        rev_fee_base_msats = 100
+        rev_timelock_delta = 144
+
+        # Special name "$system" can be used to connect to the node integrated into the OS
+        [channels.alice."$system"]
+        capacity_sats = 10000000
+        ```
+
+        The function will first asynchronously spawn all nodes,
+        then it waits for all of them to be initialized,
+        then it funds the wallets / opens the channels (might be in a single or two transactions).
+
+        Don't rely on order of node spawning/channel openning operations in your test!
+        The function may reorder them arbitrarily.
+        You're only guaranteed that the state after the function returns successfully will
+        match the description in the file.
+
+        If the secondary node was not spawned yet, the topmost node will become the secondary node.
+        If it was, you can access it with name "1".
+        """
+
+        with open(path, "r") as scenario_file:
+            scenario = toml.load(scenario_file)
+
+        try:
+            nodes = scenario["nodes"]
+        except KeyError:
+            nodes = []
+
+        try:
+            channels = scenario["channels"]
+        except KeyError:
+            channels = []
+
+        for node_name in nodes:
+            if not isinstance(node_name, str):
+                raise Exception("Node name must be a string")
+
+            if not NODE_NAME_RE.fullmatch(node_name):
+                raise Exception("Invalid node name %s")
+
+            if nodes[node_name]["type"] != "lnd":
+                raise Exception("unsupported node type " + nodes[node_name]["type"])
+
+            lnd.create_testkit_node(node_name, self._bitcoind_public_port, self._zmq_tx_port, self._zmq_block_port)
+            lnd.launch_testkit_node(node_name)
+
+        self._prepare_blocks()
+
+        # Two loops so that we launch the nodes asynchronously
+        for node_name in nodes:
+            #  mypy can't see what we checked above
+            if not isinstance(node_name, str):
+                raise Exception("Node name must be a string")
+
+            node = lnd.get_testkit_node(node_name)
+            node.wait_init()
+            pubkey = node.get_p2p_address().pubkey
+            self._ln_nodes_by_pubkey[pubkey] = node
+            self._ln_nodes_by_name[node_name] = node
+
+        for initiator_name in channels:
+            if initiator_name == "$system":
+                initiator = self._main_ln_node
+            else:
+                initiator = self._ln_nodes_by_name[initiator_name]
+
+            for receiver_name in channels[initiator_name]:
+                if receiver_name == "$system":
+                    receiver = self._main_ln_node
+                else:
+                    receiver = self._ln_nodes_by_name[receiver_name]
+
+                try:
+                    push_sats = channels[initiator_name][receiver_name]["push_sats"]
+                    if not isinstance(push_sats, int):
+                        raise Exception("push_sats for channel %s -> %s is not an int" % (initiator_name, receiver_name))
+                except KeyError:
+                    push_sats = 0
+
+                try:
+                    private = channels[initiator_name][receiver_name]["private"]
+                    if not isinstance(private, int):
+                        raise Exception("private for channel %s -> %s is not a bool" % (initiator_name, receiver_name))
+                except KeyError:
+                    private = False
+
+                channel = self._open_channel(initiator, receiver.get_p2p_address().pubkey, channels[initiator_name][receiver_name]["capacity_sats"], push_sats, private)
+
+                try:
+                    fee_base_msat = channels[initiator_name][receiver_name]["fwd_fee_base_msat"]
+                    if not isinstance(fee_base_msat, int):
+                        raise Exception("fwd_fee_base_msat for channel %s -> %s is not an int" % (initiator_name, receiver_name))
+                except KeyError:
+                    fee_base_msat = 1000
+
+                try:
+                    fee_proportional_millionths = channels[initiator_name][receiver_name]["fwd_fee_proportional_millionths"]
+                    if not isinstance(fee_proportional_millionths, int):
+                        raise Exception("fwd_fee_proportional_millionths for channel %s -> %s is not an int" % (initiator_name, receiver_name))
+                except KeyError:
+                    fee_proportional_millionths = 100
+
+                try:
+                    time_lock_delta = channels[initiator_name][receiver_name]["fwd_time_lock_delta"]
+                    if not isinstance(time_lock_delta, int):
+                        raise Exception("fwd_time_lock_delta for channel %s -> %s is not an int" % (initiator_name, receiver_name))
+                except KeyError:
+                    time_lock_delta = 144
+
+                initiator.update_channel_policy(channel, fee_base_msat, fee_proportional_millionths, time_lock_delta)
+
+                try:
+                    fee_base_msat = channels[initiator_name][receiver_name]["rev_fee_base_msat"]
+                    if not isinstance(fee_base_msat, int):
+                        raise Exception("rev_fee_base_msat for channel %s -> %s is not an int" % (initiator_name, receiver_name))
+                except KeyError:
+                    fee_base_msat = 1000
+
+                try:
+                    fee_proportional_millionths = channels[initiator_name][receiver_name]["rev_fee_proportional_millionths"]
+                    if not isinstance(fee_proportional_millionths, int):
+                        raise Exception("rev_fee_proportional_millionths for channel %s -> %s is not an int" % (initiator_name, receiver_name))
+                except KeyError:
+                    fee_proportional_millionths = 100
+
+                try:
+                    time_lock_delta = channels[initiator_name][receiver_name]["rev_time_lock_delta"]
+                    if not isinstance(time_lock_delta, int):
+                        raise Exception("rev_time_lock_delta for channel %s -> %s is not an int" % (initiator_name, receiver_name))
+                except KeyError:
+                    time_lock_delta = 144
+
+                receiver.update_channel_policy(channel, fee_base_msat, fee_proportional_millionths, time_lock_delta)

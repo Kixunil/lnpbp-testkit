@@ -124,7 +124,7 @@ def _parse_link(link: str) -> PaymentRequest:
 
             end = params.find('&', pos)
             if end < 0:
-                end = len(params) - pos
+                end = len(params)
 
             amount = params[pos:end]
 

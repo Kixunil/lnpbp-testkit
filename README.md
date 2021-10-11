@@ -91,6 +91,11 @@ So far, the public API is minimalistic. The currently public items are:
 * The `Network` class - instantiation explained in [Usage without Cryptoanarchy Debian Repository](#without-cryptoanarchy-debian-repository)
 * `Network.auto_pay(request: str)` - any BIP21 or BOLT11 (with or without `lightning:` prefix) request will be paid automatically.
 * `Network.auto_pay_legacy(address: str, amount: str)` - sends `amount` coins to address `address`
+* `Network.mine_blocks(count: int)` - Mines `count` blocks, only needed when a transaction is created outside of LNP/BP testkit
+* `Network.start_auto_mining(polling_interval_seconds: int = 3, confirm_tx_block_count: int = 6)` - starts monitoring the mempool in a separate thread
+                                                                                                    and mines `confirm_tx_block_count` blocks
+                                                                                                    whenever the mempool is not empty
+* `Network.stop_auto_mining()` - Stops mining blocks automatically (reverses the effect of `start_auto_mining` - stops the thread)
 * `Network.create_ln_invoice(amount_msat: int, memo: str) -> LnInvoiceHandle` - Creates an LN invoice that can be paid from the tested application.
                                                                                 Also makes sure a channel with sufficient liquidity exists.
 * `LnInvoiceHandle` - a class that represents and invoice that can be serialized or checked if it was paid.

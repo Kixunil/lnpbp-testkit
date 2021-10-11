@@ -7,6 +7,7 @@ from __future__ import annotations
 from bitcoin.rpc import Proxy as BitcoindProxy
 from decimal import Decimal
 from time import sleep
+import threading
 from xdg.BaseDirectory import load_first_config
 from .lightning import LnNode, ParsedInvoice, Channel
 from .lightning import P2PAddr as LnP2PAddr
@@ -145,6 +146,10 @@ class Network:
     _secondary_node: Optional[LnNode] = None
     _ln_nodes_by_name: MutableMapping[str, LnNode] = {}
     _ln_nodes_by_pubkey: MutableMapping[str, LnNode] = {}
+    _auto_miner_running: bool = False
+    _auto_miner_confirm_tx_block_count: int = 6
+    _auto_miner_polling_interval: int = 3
+    _auto_miner_thread: Optional[threading.Thread] = None
 
     def __init__(self, data: Mapping[str, Any]):
         """Configures the network
@@ -172,12 +177,87 @@ class Network:
         if "secondary_lnd_host" in data:
             self._secondary_node = LndRest(data["secondary_lnd_host"], data["secondary_lnd_macaroon"], data["secondary_lnd_tls_cert_file"])
 
+    def mine_blocks(self, count: int):
+        """Generates `count` blocks
+
+        This is usually not needed as transactions confirm automatically but it can be useful in some test scenarios.
+        If you want to mine all transactions that appear in the mempool (not just those generated from this library)
+        consider using `start_auto_mining()`.
+
+        `count` must be at least `1`.
+        """
+
+        if count < 1:
+            raise Exception("Attempt to mine %d blocks, must be at least 1" % count)
+        self._prepare_wallet()
+        # Something is wrong here, so let's retry
+        try:
+            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
+        except:
+            sleep(5)
+            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
+        BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", count, address)
+
+    def start_auto_mining(self, polling_interval_seconds: int = 3, confirm_tx_block_count: int = 6):
+        """Mines blocks whenever any transaction appears in mempool
+
+        This can be used when transactions are produced by software other than this testkit
+        to ensure they are quickly confirmed. The miner runs in a different thread, so you can just call this function
+        before your test triggers such transaction. Note that calling it after trigger is also OK because if there are
+        already transactions in the mempool when you start auto miner those will be confirmed immediately.
+
+        Since it is expected that this is used for tests only a simple polling implementation is used.
+        You can adjust polling interval to your needs using `polling_interval_seconds` parameter (currently defaults to 3s).
+        You can also pick a different number of blocks to be mined using `confirm_tx_block_count` (defaults to 6).
+
+        Note that if your test synchronously knows about transaction being broadcast it may be better to just call `mine_blocks`
+        after it was. However auto miner can still save you from writing `mine_blocks` multiple times and can be handy in manual
+        tests too.
+        """
+
+        if polling_interval_seconds < 1:
+            raise Exception("Attempt to set polling interval to %d, must be at least 1" % count)
+        if self._auto_miner_running or self._auto_miner_thread is not None:
+            raise Exception("Auto miner is already running")
+        self._auto_miner_confirm_tx_block_count = confirm_tx_block_count
+        self._auto_miner_polling_interval = confirm_tx_block_count
+        self._auto_miner_running = True
+        try:
+            self._auto_miner_thread = threading.Thread(target = self._run_auto_miner)
+        except Exception as e:
+            self._auto_miner_running = False
+            raise e
+
+    def stop_auto_mining(self):
+        """Stops automatic transaction mining started by `start_auto_mining`
+
+        After call to this function returns no more transactions will be mined automatically (unless started again).
+        This call synchronously waits for the mining thread to stop so you don't have to worry about races. However setting too
+        long polling period will affect the waiting time too. It is thus recommended to either set waiting time to reasonably
+        short or to perform tests *without* auto mining before tests *with* auto mining.
+        """
+
+        if self._auto_miner_thread is None:
+            raise Exception("Auto miner is not running")
+        self._auto_miner_running = False
+        self._auto_miner_thread.join()
+        self._auto_miner_thread = None
+
+    def _run_auto_miner(self):
+        while self._auto_miner_running:
+            try:
+                mempool_info = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getmempoolinfo")
+                if mempool_info["size"] > 0:
+                    self.mine_blocks(self._auto_miner_confirm_tx_block_count)
+            except Exception as e:
+                print("Failed to auto-mine: {}".format(e))
+            sleep(self._auto_miner_polling_interval)
+
     def _prepare_blocks(self):
         info = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getblockchaininfo")
-        if info["blocks"] < 101:
-            self._prepare_wallet()
-            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-            BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
+        block_count = info["blocks"]
+        if block_count < 101:
+            self.mine_blocks(101 - block_count)
 
     def warm_up(self, blocks: bool = True, secondary_ln_node: bool = True, channels: bool = False):
         """Initializes the network
@@ -240,15 +320,13 @@ class Network:
         # We assume pessimistic fee 100000 sats
         # I don't care to compute halvings etc, so just generate blocks in a loop
         while BitcoindProxy(service_url = self._main_bitcoind_url).getbalance() < amount * 100000000 + 100000:
-            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-            BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 101, address)
+            self.mine_blocks(101)
 
     def _send_coins(self, address: str, amount: str):
         BitcoindProxy(service_url = self._main_bitcoind_url)._call("sendtoaddress", address, amount)
 
         # Confirm the transaction
-        address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-        BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 6, address)
+        self.mine_blocks(6)
 
     def _spawn_secondary_node(self, secondary_node_id: str) -> LnNode:
         lnd.create_testkit_node(secondary_node_id, self._bitcoind_public_port, self._zmq_tx_port, self._zmq_block_port)
@@ -278,13 +356,7 @@ class Network:
         channel = source.open_channel(node_address, amount_sat, push_sat, private)
 
         # Confirm the channel
-        # Something is wrong here, so let's retry
-        try:
-            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-        except:
-            sleep(5)
-            address = BitcoindProxy(service_url = self._main_bitcoind_url)._call("getnewaddress")
-        BitcoindProxy(service_url = self._main_bitcoind_url)._call("generatetoaddress", 6, address)
+        self.mine_blocks(6)
 
         return channel
 

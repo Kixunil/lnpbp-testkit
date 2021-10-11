@@ -210,17 +210,18 @@ class LndRest(LnNode):
         lookup_invoice_response = self._rpc_call("invoice/%s" % decode_payreq_response["payment_hash"])
         return lookup_invoice_response["settled"]
 
-    def wait_init(self):
+    def wait_init(self) -> LnNode:
         while not self._initialized:
             try:
                 info = self._rpc_call("getinfo")
                 if info["synced_to_chain"]:
                     self._initialized = True
-                    return
+                    return self
             except:
                 pass
 
             sleep(3)
+        return self
 
 
 def get_xdg_resource(instance_id: str) -> str:

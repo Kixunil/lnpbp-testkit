@@ -96,8 +96,11 @@ class LnNode(Protocol):
             sleep(1)
         return self.is_invoice_paid(invoice)
 
-    def wait_init(self):
-        """Blocks until the node is fully functional"""
+    def wait_init(self) -> LnNode:
+        """Blocks until the node is fully functional.
+
+        Must return self to allow chaining of operations.
+        """
 
     def update_channel_policy(self, channel: Channel, base_fee_msat: int, fee_proportional_millionths: int, time_lock_delta: int):
         """Updates the policy of `channel`"""
